@@ -1,54 +1,69 @@
 package com.upb.cloudgateway.filters;
 
-
 import com.upb.cloudgateway.util.JwtUtil;
+import io.jsonwebtoken.Claims;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cloud.context.config.annotation.RefreshScope;
 import org.springframework.cloud.gateway.filter.GatewayFilter;
-import org.springframework.cloud.gateway.filter.factory.AbstractGatewayFilterFactory;
-import org.springframework.http.HttpHeaders;
+import org.springframework.cloud.gateway.filter.GatewayFilterChain;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.server.reactive.ServerHttpRequest;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
 
+@RefreshScope
 @Component
-public class AuthenticationFilter extends AbstractGatewayFilterFactory<AuthenticationFilter.Config> {
+public class AuthenticationFilter implements GatewayFilter {
+
+    private final RouterValidator routerValidator;
+    private final JwtUtil jwtUtil;
 
     @Autowired
-    private RouteValidator validator;
-
-    @Autowired
-    private JwtUtil jwtUtil;
-
-    public AuthenticationFilter() {
-        super(Config.class);
+    public AuthenticationFilter(RouterValidator routerValidator, JwtUtil jwtUtil) {
+        this.routerValidator = routerValidator;
+        this.jwtUtil = jwtUtil;
     }
 
     @Override
-    public GatewayFilter apply(Config config) {
-        return ((exchange, chain) -> {
-            if (validator.isSecured.test(exchange.getRequest())) {
-                //header contains token or not
-                if (!exchange.getRequest().getHeaders().containsKey(HttpHeaders.AUTHORIZATION)) {
-                    throw new RuntimeException("missing authorization header");
-                }
+    public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
+        ServerHttpRequest request = exchange.getRequest();
 
-                String authHeader = exchange.getRequest().getHeaders().get(HttpHeaders.AUTHORIZATION).get(0);
-                if (authHeader != null && authHeader.startsWith("Bearer ")) {
-                    authHeader = authHeader.substring(7);
-                }
-                try {
-//                    //REST call to AUTH service
-//                    template.getForObject("http://IDENTITY-SERVICE//validate?token" + authHeader, String.class);
-                    jwtUtil.validateToken(authHeader);
-
-                } catch (Exception e) {
-                    System.out.println("invalid access...!");
-                    throw new RuntimeException("un authorized access to application");
-                }
+        if (routerValidator.isSecured.test(request)) {
+            if (this.isAuthMissing(request)) {
+                return this.onError(exchange, HttpStatus.UNAUTHORIZED);
             }
-            return chain.filter(exchange);
-        });
+
+            final String token = this.getAuthHeader(request);
+
+            if (jwtUtil.isInvalid(token)) {
+                return this.onError(exchange, HttpStatus.FORBIDDEN);
+            }
+
+            this.updateRequest(exchange, token);
+        }
+        return chain.filter(exchange);
     }
 
-    public static class Config {
+    private Mono<Void> onError(ServerWebExchange exchange, HttpStatus httpStatus) {
+        ServerHttpResponse response = exchange.getResponse();
+        response.setStatusCode(httpStatus);
+        return response.setComplete();
+    }
 
+    private String getAuthHeader(ServerHttpRequest request) {
+        return request.getHeaders().getOrEmpty("Authorization").get(0);
+    }
+
+    private boolean isAuthMissing(ServerHttpRequest request) {
+        return !request.getHeaders().containsKey("Authorization");
+    }
+
+    private void updateRequest(ServerWebExchange exchange, String token) {
+        Claims claims = jwtUtil.getAllClaimsFromToken(token);
+        exchange.getRequest().mutate()
+                .header("username", String.valueOf(claims.get("username")))
+                .build();
     }
 }

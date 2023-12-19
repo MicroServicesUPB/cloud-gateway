@@ -1,14 +1,31 @@
 package com.upb.cloudgateway.config;
 
-
+import com.upb.cloudgateway.filters.AuthenticationFilter;
+import lombok.RequiredArgsConstructor;
+import org.springframework.cloud.gateway.route.RouteLocator;
+import org.springframework.cloud.gateway.route.builder.RouteLocatorBuilder;
+import org.springframework.cloud.netflix.hystrix.EnableHystrix;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.web.client.RestTemplate;
 
 @Configuration
-public class AppConfig {
-    @Bean
-    public RestTemplate template(){
-        return new RestTemplate();
+@EnableHystrix
+public class GatewayConfig {
+
+    private final AuthenticationFilter filter;
+
+    public GatewayConfig(AuthenticationFilter filter) {
+        this.filter = filter;
     }
+
+    @Bean
+    public RouteLocator routes(RouteLocatorBuilder builder) {
+        return builder.routes()
+                .route("AUTH-SERVICE", r -> r.path("/api/auth/**")
+                        .filters(f -> f.filter(filter))
+                        .uri("lb://AUTH-SERVICE"))
+                .build();
+
+    }
+
 }
